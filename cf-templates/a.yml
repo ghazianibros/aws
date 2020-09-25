@@ -1,0 +1,643 @@
+AWSTemplateFormatVersion: 2010-09-09
+Transform:
+  - AWS::Serverless-2016-10-31
+
+Parameters:
+  VPNTable:
+    Type: String
+    Description: DynamoDB table listing VPNs
+  UsersTable:
+    Type: String
+    Description: DynamoDB table listing users for each VPN
+  RequestsTable:
+    Type: String
+    Description: DynamoDB table listing certain requests for each VPN
+  RequestHistoryTable:
+    Type: String
+    Description: DynamoDB table listing history of all access requests
+  CreateClientCertificateFunctionArn:
+    Type: String
+    Description: 'ARN of lambda for creating client certificates'
+  CertificateBucket:
+    Description: 'The name of the certificate bucket'
+    Type: String
+  GetVpnResourceLinksFunctionArn:
+    Description: 'ARN of lambda for getting mutual auth resource links'
+    Type: String
+
+
+Outputs:
+  RegisterVpnFunctionArn:
+    Description: 'ARN of function used for registering VPN'
+    Value: !GetAtt RegisterVpnFunction.Arn
+  MutualAuthRequestStateMachineArn:
+    Description: 'ARN of the step function for processing access requests for mutual auth VPNs'
+    Value: !Ref MutualAuthRequestStateMachine
+  ActiveDirectoryRequestStateMachineArn:
+    Description: 'ARN of the step function for processing access requests for active directory VPNs'
+    Value: !Ref ActiveDirectoryRequestStateMachine
+  AutomationLambdaRoleArn:
+    Value: !GetAtt AutomationLambdaExecutionRole.Arn
+
+
+Resources:
+
+  RegisterVpnFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: index.handler
+      Runtime: python3.7
+      Timeout : 900
+      CodeUri: ../lambdas/register-vpn
+      Environment:
+        Variables:
+          DYNAMO_TABLE: !Ref VPNTable
+      Policies:
+        - Statement:
+            -
+              Effect: Allow
+              Action:
+                - dynamodb:PutItem
+              Resource: !Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${VPNTable}'
+
+  RequestSNSTopic:
+    Type: AWS::SNS::Topic
+
+
+  UpdateRequestTableFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: index.handler
+      Runtime: python3.8
+      Timeout : 90
+      CodeUri: ../lambdas/update-request-table
+      Environment:
+        Variables:
+          REQUEST_TABLE: !Ref RequestsTable
+      Policies:
+        - Statement:
+            -
+              Effect: Allow
+              Action:
+                - dynamodb:UpdateItem
+              Resource: !Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${RequestsTable}'
+      Events:
+        MutualAuthUpdate:
+          Type: SNS
+          Properties:
+            Topic: !Ref RequestSNSTopic
+            FilterPolicy:
+              RequestType:
+                - MutualAuthAccess
+                - ActiveDirectoryAccess
+
+
+  RequestRejectEmailFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: index.handler
+      Runtime: python3.8
+      Timeout : 90
+      CodeUri: ../lambdas/email-request-reject
+      Environment:
+        Variables:
+          FROM_EMAIL: awsmailer@gerbertechnology.com
+      Role: !GetAtt AutomationLambdaExecutionRole.Arn
+
+
+  RequestApproveEmailMutualFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: index.handler
+      Runtime: python3.8
+      Timeout : 90
+      CodeUri: ../lambdas/email-request-approve-mutualauth
+      Environment:
+        Variables:
+          BUCKET_NAME: !Ref CertificateBucket
+          GET_RESOURCE_LINKS_FUNCTION_ARN: !Ref GetVpnResourceLinksFunctionArn
+          FROM_EMAIL: awsmailer@gerbertechnology.com
+      Role: !GetAtt AutomationLambdaExecutionRole.Arn
+
+
+  RequestApproveEmailActiveDirectoryFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: index.handler
+      Runtime: python3.8
+      Timeout : 90
+      CodeUri: ../lambdas/email-request-approve-activedir
+      Environment:
+        Variables:
+          FROM_EMAIL: awsmailer@gerbertechnology.com
+      Role: !GetAtt AutomationLambdaExecutionRole.Arn
+
+
+  MutualAuthRequestStateMachine:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      RoleArn:
+        Fn::GetAtt:
+          - RequestsStepFunctionRole
+          - Arn
+      DefinitionString: !Sub |-
+        {
+          "StartAt": "InsertRequest",
+          "States": {
+            "InsertRequest": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::dynamodb:putItem",
+              "Parameters": {
+                "TableName": "${RequestsTable}",
+                "Item": {
+                  "vpnId": {
+                    "S.$": "$.start.vpnId"
+                  },
+                  "requestId": {
+                    "S.$": "$.start.requestId"
+                  },
+                  "email": {
+                    "S.$": "$.start.email"
+                  },
+                  "timestamp": {
+                    "N.$": "$.start.timestamp"
+                  },
+                  "description": {
+                    "S.$": "$.start.description"
+                  }
+                }
+              },
+              "ResultPath": null,
+              "Next": "InsertRequestHistory"
+            },
+            "InsertRequestHistory": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::dynamodb:putItem",
+              "Parameters": {
+                "TableName": "${RequestHistoryTable}",
+                "Item": {
+                  "vpnId": {
+                    "S.$": "$.start.vpnId"
+                  },
+                  "requestId": {
+                    "S.$": "$.start.requestId"
+                  },
+                  "email": {
+                    "S.$": "$.start.email"
+                  },
+                  "timestamp": {
+                    "N.$": "$.start.timestamp"
+                  },
+                  "description": {
+                    "S.$": "$.start.description"
+                  },
+                  "status": {
+                    "S": "active"
+                  }
+                }
+              },
+              "ResultPath": null,
+              "Next": "Notify"
+            },
+            "Notify": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::sns:publish.waitForTaskToken",
+              "Parameters": {
+                "Subject": "New VPN Mutual Auth Access Request",
+                "Message.$": "$.start.notification",
+                "TopicArn": "${RequestSNSTopic}",
+                "MessageAttributes": {
+                  "RequestType": {
+                    "DataType": "String",
+                    "StringValue": "MutualAuthAccess"
+                  },
+                  "VpnId": {
+                    "DataType": "String",
+                    "StringValue.$": "$.start.vpnId"
+                  },
+                  "RequestId": {
+                    "DataType": "String",
+                    "StringValue.$": "$.start.requestId"
+                  },
+                  "UserEmail": {
+                    "DataType": "String",
+                    "StringValue.$": "$.start.email"
+                  },
+                  "TaskToken": {
+                    "DataType": "String",
+                    "StringValue.$": "$$.Task.Token"
+                  }
+                }
+              },
+              "ResultPath": "$.approvalResult",
+              "Next": "UpdateRequestHistory"
+            },
+            "UpdateRequestHistory": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::dynamodb:updateItem",
+              "Parameters": {
+                "TableName": "${RequestHistoryTable}",
+                "Key": {
+                  "email": {
+                    "S.$": "$.start.email"
+                  },
+                  "timestamp": {
+                    "N.$": "$.start.timestamp"
+                  }
+                },
+                "UpdateExpression": "set #S = :status, #R = :reason",
+                "ExpressionAttributeValues": {
+                  ":status": {
+                    "S.$": "$.approvalResult.status"
+                  },
+                  ":reason": {
+                    "S.$": "$.approvalResult.reason"
+                  }
+                },
+                "ExpressionAttributeNames": {
+                  "#S": "status",
+                  "#R": "statusReason"
+                }
+              },
+              "ResultPath": null,
+              "Next": "CheckRequestStatus"
+            },
+            "CheckRequestStatus": {
+                "Type" : "Choice",
+                "Default" : "NotifyRejection",
+                "Choices" : [
+                    {
+                        "Variable" : "$.approvalResult.status",
+                        "StringEquals" : "rejected",
+                        "Next" : "NotifyRejection"
+                    },
+                    {
+                        "Variable": "$.approvalResult.status",
+                        "StringEquals": "approved",
+                        "Next": "CreateCertificate"
+                    }
+                ]
+            },
+            "NotifyRejection": {
+              "Type": "Task",
+              "Resource": "${RequestRejectEmailFunction.Arn}",
+              "Next": "DeleteRequest"
+            },
+            "CreateCertificate": {
+              "Type": "Task",
+              "Resource": "${CreateClientCertificateFunctionArn}",
+              "Next": "CreateUser"
+            },
+            "CreateUser": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::dynamodb:putItem",
+              "Parameters": {
+                "TableName": "${UsersTable}",
+                "Item": {
+                  "vpnId": {
+                    "S.$": "$.start.vpnId"
+                  },
+                  "email": {
+                    "S.$": "$.start.email"
+                  },
+                  "identity": {
+                    "S.$": "$.createCertificate.domain"
+                  }
+                }
+              },
+              "ResultPath": null,
+              "Next": "NotifyApproval"
+            },
+            "NotifyApproval": {
+              "Type": "Task",
+              "Resource": "${RequestApproveEmailMutualFunction.Arn}",
+              "Next": "DeleteRequest"
+            },
+            "DeleteRequest": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::dynamodb:deleteItem",
+              "Parameters": {
+                "TableName": "${RequestsTable}",
+                "Key": {
+                  "requestId": {
+                    "S.$": "$.start.requestId"
+                  }
+                }
+              },
+              "ResultPath": null,
+              "End": true
+            }
+          }
+        }
+
+
+  ActiveDirectoryRequestStateMachine:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      RoleArn:
+        Fn::GetAtt:
+          - RequestsStepFunctionRole
+          - Arn
+      DefinitionString: !Sub |-
+        {
+          "StartAt": "InsertRequest",
+          "States": {
+            "InsertRequest": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::dynamodb:putItem",
+              "Parameters": {
+                "TableName": "${RequestsTable}",
+                "Item": {
+                  "vpnId": {
+                    "S.$": "$.start.vpnId"
+                  },
+                  "requestId": {
+                    "S.$": "$.start.requestId"
+                  },
+                  "email": {
+                    "S.$": "$.start.email"
+                  },
+                  "timestamp": {
+                    "N.$": "$.start.timestamp"
+                  },
+                  "description": {
+                    "S.$": "$.start.description"
+                  }
+                }
+              },
+              "ResultPath": null,
+              "Next": "InsertRequestHistory"
+            },
+            "InsertRequestHistory": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::dynamodb:putItem",
+              "Parameters": {
+                "TableName": "${RequestHistoryTable}",
+                "Item": {
+                  "vpnId": {
+                    "S.$": "$.start.vpnId"
+                  },
+                  "requestId": {
+                    "S.$": "$.start.requestId"
+                  },
+                  "email": {
+                    "S.$": "$.start.email"
+                  },
+                  "timestamp": {
+                    "N.$": "$.start.timestamp"
+                  },
+                  "description": {
+                    "S.$": "$.start.description"
+                  },
+                  "status": {
+                    "S": "active"
+                  }
+                }
+              },
+              "ResultPath": null,
+              "Next": "Notify"
+            },
+            "Notify": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::sns:publish.waitForTaskToken",
+              "Parameters": {
+                "Subject": "New VPN Active Directory Access Request",
+                "Message.$": "$.start.notification",
+                "TopicArn": "${RequestSNSTopic}",
+                "MessageAttributes": {
+                  "RequestType": {
+                    "DataType": "String",
+                    "StringValue": "ActiveDirectoryAccess"
+                  },
+                  "VpnId": {
+                    "DataType": "String",
+                    "StringValue.$": "$.start.vpnId"
+                  },
+                  "RequestId": {
+                    "DataType": "String",
+                    "StringValue.$": "$.start.requestId"
+                  },
+                  "UserEmail": {
+                    "DataType": "String",
+                    "StringValue.$": "$.start.email"
+                  },
+                  "TaskToken": {
+                    "DataType": "String",
+                    "StringValue.$": "$$.Task.Token"
+                  }
+                }
+              },
+              "ResultPath": "$.approvalResult",
+              "Next": "UpdateRequestHistory"
+            },
+            "UpdateRequestHistory": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::dynamodb:updateItem",
+              "Parameters": {
+                "TableName": "${RequestHistoryTable}",
+                "Key": {
+                  "email": {
+                    "S.$": "$.start.email"
+                  },
+                  "timestamp": {
+                    "N.$": "$.start.timestamp"
+                  }
+                },
+                "UpdateExpression": "set #S = :status, #R = :reason",
+                "ExpressionAttributeValues": {
+                  ":status": {
+                    "S.$": "$.approvalResult.status"
+                  },
+                  ":reason": {
+                    "S.$": "$.approvalResult.reason"
+                  }
+                },
+                "ExpressionAttributeNames": {
+                  "#S": "status",
+                  "#R": "statusReason"
+                }
+              },
+              "ResultPath": null,
+              "Next": "CheckRequestStatus"
+            },
+            "CheckRequestStatus": {
+                "Type" : "Choice",
+                "Default" : "NotifyRejection",
+                "Choices" : [
+                    {
+                        "Variable" : "$.approvalResult.status",
+                        "StringEquals" : "rejected",
+                        "Next" : "NotifyRejection"
+                    },
+                    {
+                        "Variable": "$.approvalResult.status",
+                        "StringEquals": "approved",
+                        "Next": "CreateUser"
+                    }
+                ]
+            },
+            "NotifyRejection": {
+              "Type": "Task",
+              "Resource": "${RequestRejectEmailFunction.Arn}",
+              "Next": "DeleteRequest"
+            },
+            "CreateUser": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::dynamodb:putItem",
+              "Parameters": {
+                "TableName": "${UsersTable}",
+                "Item": {
+                  "vpnId": {
+                    "S.$": "$.start.vpnId"
+                  },
+                  "email": {
+                    "S.$": "$.start.email"
+                  },
+                  "identity": {
+                    "S.$": "$.approvalResult.user.username"
+                  }
+                }
+              },
+              "ResultPath": null,
+              "Next": "NotifyApproval"
+            },
+            "NotifyApproval": {
+              "Type": "Task",
+              "Resource": "${RequestApproveEmailActiveDirectoryFunction.Arn}",
+              "Next": "DeleteRequest"
+            },
+            "DeleteRequest": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::dynamodb:deleteItem",
+              "Parameters": {
+                "TableName": "${RequestsTable}",
+                "Key": {
+                  "requestId": {
+                    "S.$": "$.start.requestId"
+                  }
+                }
+              },
+              "ResultPath": null,
+              "End": true
+            }
+          }
+        }
+
+
+  RequestsStepFunctionRole:
+    Description: Jobs Step Function Role
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: [ !Sub 'states.${AWS::Region}.amazonaws.com' ]
+            Action: sts:AssumeRole
+      Path: /
+      Policies:
+        -
+          PolicyName: "root"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              -
+                Effect: Allow
+                Action:
+                  - dynamodb:BatchGetItem
+                  - dynamodb:GetItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                Resource:
+                  - !Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${VPNTable}'
+                  - !Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${UsersTable}'
+                  - !Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${RequestsTable}'
+              -
+                Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                Resource:
+                  - !Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${UsersTable}'
+                  - !Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${RequestsTable}'
+                  - !Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${RequestHistoryTable}'
+              -
+                Effect: Allow
+                Action:
+                  - sns:Publish
+                Resource:
+                  - !Ref RequestSNSTopic
+              -
+                Effect: Allow
+                Action:
+                  - dynamodb:UpdateItem
+                Resource:
+                  - !Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${RequestsTable}'
+                  - !Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${RequestHistoryTable}'
+              -
+                Effect: Allow
+                Action:
+                  - dynamodb:DeleteItem
+                Resource:
+                  - !Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${RequestsTable}'
+              -
+                Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource:
+                  - !Ref CreateClientCertificateFunctionArn
+                  - !GetAtt RequestRejectEmailFunction.Arn
+                  - !GetAtt RequestApproveEmailMutualFunction.Arn
+                  - !GetAtt RequestApproveEmailActiveDirectoryFunction.Arn
+
+
+  AutomationLambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: [lambda.amazonaws.com]
+            Action: sts:AssumeRole
+      Path: /
+      ManagedPolicyArns:
+        -  arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        -
+          PolicyName: "root"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              -
+                Effect: Allow
+                Action:
+                  - "kms:DescribeKey"
+                  - "kms:Encrypt"
+                  - "kms:Decrypt"
+                  - "kms:ReEncrypt*"
+                  - "kms:GenerateDataKey"
+                  - "kms:GenerateDataKeyWithoutPlaintext"
+                Resource: !Sub arn:aws:kms:${AWS::Region}:${AWS::AccountId}:alias/VpnGenericEncryption
+              -
+                Effect: Allow
+                Action:
+                  - "sts:AssumeRole"
+                Resource: '*'
+              -
+                Effect: Allow
+                Action:
+                  - "s3:GetObject"
+                Resource:
+                  - !Sub "arn:aws:s3:::${CertificateBucket}/*"
+              -
+                Effect: Allow
+                Action:
+                  - "ses:SendEmail"
+                  - "ses:SendRawEmail"
+                Resource: '*'
+              -
+                Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource:
+                  - !Ref GetVpnResourceLinksFunctionArn
