@@ -1,0 +1,63 @@
+AWSTemplateFormatVersion: 2010-09-09
+Transform:
+  - AWS::Serverless-2016-10-31
+
+
+Parameters:
+  Stage:
+    Type: String
+    Default: dev
+  AggregatorName:
+    Type: String
+  AggregatorArn:
+    Type: String
+  ZendeskApiKey:
+    Type: String
+    Default: 'u10KiMaiC9GaTn3Iuh6YLvYInkdcNg434s4q33Or'
+    NoEcho: true
+
+
+Resources:
+
+  ExpiringCertTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: certArn
+          AttributeType: S
+      KeySchema:
+        - KeyType: HASH
+          AttributeName: certArn
+
+
+  AlertFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: index.handler
+      Runtime: python3.8
+      Timeout: 900
+      CodeUri: lambda
+      Environment:
+        Variables:
+          AGGREGATOR_NAME: !Ref AggregatorName
+          DYNAMO_TABLE: !Ref ExpiringCertTable
+          ZENDESK_API_KEY: !Ref ZendeskApiKey
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ExpiringCertTable
+        -
+          Statement:
+            -
+              Effect: Allow
+              Action:
+                - config:ListAggregateDiscoveredResources
+                - config:BatchGetAggregateResourceConfig
+                - config:GetAggregateResourceConfig
+              Resource: !Ref AggregatorArn
+      Events:
+        Schedule:
+          Type: Schedule
+          Properties:
+            Schedule: 'cron(0 0 * * ? *)'
+            Enabled: !If [!Equals [!Ref Stage, "prod"], true, false]

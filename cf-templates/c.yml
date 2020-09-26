@@ -1,0 +1,712 @@
+AWSTemplateFormatVersion: 2010-09-09
+Transform:
+  - AWS::Serverless-2016-10-31
+
+Parameters:
+  ProjectId:
+    Type: String
+    Description: AWS CodeStar projectID used to associate new resources to team members
+  Stage:
+    Type: String
+    Description: The name for a project pipeline stage, such as Staging or Prod, for which resources are provisioned and deployed.
+    Default: ''
+  TokenSecret:
+    Type: String
+  DBHost:
+    Type: String
+  DBPassword:
+    Type: String
+  LambdaSecurityGroup:
+    Type: String
+  LambdaSubnet1:
+    Type: String
+  LambdaSubnet2:
+    Type: String
+  LambdaSubnet3:
+    Type: String
+  LambdaSubnet4:
+    Type: String
+
+Outputs:
+  RestApiId:
+    Description: Rest API ID
+    Value: !Ref Api
+    Export:
+      Name: !Sub "${AWS::StackName}-API-ID"
+
+Globals:
+  Function:
+    AutoPublishAlias: live
+  Api:
+    Cors:
+      AllowOrigin: "'*'"
+      AllowHeaders: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+      AllowMethods: "'*'"
+
+Resources:
+  Licenses:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: index.handler
+      Runtime: nodejs12.x
+      CodeUri: app
+      Environment:
+        Variables:
+          NODE_ENV: production
+          SecretKey: !Ref TokenSecret
+          dbhost: !Ref DBHost
+          dbuser: ssoAdmin
+          dbpass: !Ref DBPassword
+          db: Auth
+      Role:
+        Fn::GetAtt:
+          - LambdaExecutionRole
+          - Arn
+      VpcConfig:
+        SubnetIds:
+          - !Ref LambdaSubnet1
+          - !Ref LambdaSubnet2
+          - !Ref LambdaSubnet3
+          - !Ref LambdaSubnet4
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+      Events:
+        GetAllEvent:
+          Type: Api
+          Properties:
+            Path: /licenses
+            Method: get
+            RestApiId: !Ref Api
+        PostEvent:
+          Type: Api
+          Properties:
+            Path: /licenses
+            Method: post
+            RestApiId: !Ref Api
+        GetOneEvent:
+          Type: Api
+          Properties:
+            Path: /licenses/{id}
+            Method: get
+            RestApiId: !Ref Api
+        PutOneEvent:
+          Type: Api
+          Properties:
+            Path: /licenses/{id}
+            Method: put
+            RestApiId: !Ref Api
+        DeleteOneEvent:
+          Type: Api
+          Properties:
+            Path: /licenses/{id}
+            Method: delete
+            RestApiId: !Ref Api
+
+  Tenants:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: index.handler
+      Runtime: nodejs12.x
+      CodeUri: app
+      Environment:
+        Variables:
+          NODE_ENV: production
+          SecretKey: !Ref TokenSecret
+          dbhost: !Ref DBHost
+          dbuser: ssoAdmin
+          dbpass: !Ref DBPassword
+          db: Auth
+      Role:
+        Fn::GetAtt:
+          - LambdaExecutionRole
+          - Arn
+      VpcConfig:
+        SubnetIds:
+          - !Ref LambdaSubnet1
+          - !Ref LambdaSubnet2
+          - !Ref LambdaSubnet3
+          - !Ref LambdaSubnet4
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+      Events:
+        GetAllEvent:
+          Type: Api
+          Properties:
+            Path: /tenants
+            Method: get
+            RestApiId: !Ref Api
+        PostEvent:
+          Type: Api
+          Properties:
+            Path: /tenants
+            Method: post
+            RestApiId: !Ref Api
+        GetOneEvent:
+          Type: Api
+          Properties:
+            Path: /tenants/{id}
+            Method: get
+            RestApiId: !Ref Api
+        PutOneEvent:
+          Type: Api
+          Properties:
+            Path: /tenants/{id}
+            Method: put
+            RestApiId: !Ref Api
+        DeleteOneEvent:
+          Type: Api
+          Properties:
+            RestApiId: !Ref Api
+            Path: /tenants/{id}
+            Method: delete
+
+
+  Count:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: index.handler
+      Runtime: nodejs12.x
+      CodeUri: app
+      Environment:
+        Variables:
+          NODE_ENV: production
+          SecretKey: !Ref TokenSecret
+          dbhost: !Ref DBHost
+          dbuser: ssoAdmin
+          dbpass: !Ref DBPassword
+          db: Auth
+      Role:
+        Fn::GetAtt:
+          - LambdaExecutionRole
+          - Arn
+      VpcConfig:
+        SubnetIds:
+          - !Ref LambdaSubnet1
+          - !Ref LambdaSubnet2
+          - !Ref LambdaSubnet3
+          - !Ref LambdaSubnet4
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+      Events:
+        CountLicenses:
+          Type: Api
+          Properties:
+            Path: /count/licenses
+            Method: get
+            RestApiId: !Ref Api
+        CountTenants:
+          Type: Api
+          Properties:
+            Path: /count/tenants
+            Method: get
+            RestApiId: !Ref Api
+
+
+  LambdaExecutionRole:
+    Description: Creating service role in IAM for AWS Lambda
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'CodeStar-${ProjectId}-Execution${Stage}'
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: [lambda.amazonaws.com]
+            Action: sts:AssumeRole
+      Path: /
+      ManagedPolicyArns:
+        -  arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        -  arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+
+  Api:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: Prod
+      AccessLogSetting:
+        DestinationArn: !ImportValue APIGateway-AccessLog-DeliveryStream-Arn
+        Format: '{"api_id":"$context.apiId","authorizer_principal_id":"$context.authorizer.principalId","aws_endpoint_request_id":"$context.awsEndpointRequestId","domain_name":"$context.domainName","domain_prefix":"$context.domainPrefix","error_message":"$context.error.message","error_message_string":"$context.error.messageString","error_response_type":"$context.error.responseType","error_validation_error_string":"$context.error.validationErrorString","extended_request_id":"$context.extendedRequestId","http_method":"$context.httpMethod","caller_account_id":"$context.identity.accountId","api_key":"$context.identity.apiKey","api_key_id":"$context.identity.apiKeyId","caller":"$context.identity.caller","cognito_authentication_provider":"$context.identity.cognitoAuthenticationProvider","cognito_authentication_type":"$context.identity.cognitoAuthenticationType","cognito_identity_id":"$context.identity.cognitoIdentityId","cognito_identity_pool_id":"$context.identity.cognitoIdentityPoolId","principal_org_id":"$context.identity.principalOrgId","source_ip":"$context.identity.sourceIp","user":"$context.identity.user","user_agent":"$context.identity.userAgent","user_arn":"$context.identity.userArn","path":"$context.path","protocol":"$context.protocol","requestId":"$context.requestId","response_override_status":"$context.responseOverride.status","request_time":"$context.requestTime","request_time_epoch":"$context.requestTimeEpoch","resource_id":"$context.resourceId","resource_path":"$context.resourcePath","stage":"$context.stage","waf_response_code":"$context.wafResponseCode","web_acl_arn":"$context.webaclArn","xray_trace_id":"$context.xrayTraceId","authorizer_integration_latency":"$context.authorizer.integrationLatency","integration_latency":"$context.integrationLatency","integration_status":"$context.integrationStatus","response_latency":"$context.responseLatency","response_length":"$context.responseLength","status":"$context.status"}'
+      DefinitionBody:
+        swagger: "2.0"
+        info:
+          version: "1.0"
+          title: "awscodestar-gt-api-tenantma-lambda"
+        schemes:
+          - "https"
+        definitions:
+          Tenant:
+            type: object
+            properties:
+              ID:
+                type: number
+              Name:
+                type: string
+              ExtID:
+                type: number
+              ShortHash:
+                type: string
+          TenantList:
+            type: array
+            items:
+              $ref: "#/definitions/Tenant"
+          License:
+            type: object
+            properties:
+              ID:
+                type: number
+              Name:
+                type: string
+          LicenseList:
+            type: array
+            items:
+              $ref: "#/definitions/License"
+          LicenseInsert:
+            type: object
+            properties:
+              Name:
+                type: string
+          TenantInsert:
+            type: object
+            properties:
+              Name:
+                type: string
+              ExtID:
+                type: number
+              ShortHash:
+                type: string
+        paths:
+          /licenses:
+            get:
+              parameters:
+                -
+                  in: query
+                  name: Offset
+                  description: "Start ID (exclusive)"
+                -
+                  in: query
+                  name: Limit
+                  description: "Maximum number of items in response"
+                -
+                  in: query
+                  name: Like
+                  description: "Filter for license name"
+              responses:
+                "200":
+                  schema:
+                    $ref: "#/definitions/LicenseList"
+              x-amazon-apigateway-integration:
+                uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${Licenses}:live/invocations"
+                passthroughBehavior: "when_no_match"
+                httpMethod: "POST"
+                type: "aws_proxy"
+                responses:
+                  default:
+                    statusCode: "200"
+            post:
+              parameters:
+                -
+                  in: body
+                  name: name
+                  schema:
+                    $ref: "#/definitions/LicenseInsert"
+              responses:
+                "200":
+                  schema:
+                    $ref: "#/definitions/License"
+              x-amazon-apigateway-integration:
+                uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${Licenses}:live/invocations"
+                passthroughBehavior: "when_no_match"
+                httpMethod: "POST"
+                type: "aws_proxy"
+                responses:
+                  default:
+                    statusCode: "200"
+            options:
+              consumes:
+                - "application/json"
+              produces:
+                - "application/json"
+              responses:
+                "200":
+                  description: "200 response"
+                  headers:
+                    Access-Control-Allow-Origin:
+                      type: "string"
+                    Access-Control-Allow-Methods:
+                      type: "string"
+                    Access-Control-Allow-Headers:
+                      type: "string"
+              x-amazon-apigateway-integration:
+                responses:
+                  default:
+                    statusCode: "200"
+                    responseParameters:
+                      method.response.header.Access-Control-Allow-Methods: "'*'"
+                      method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+                      method.response.header.Access-Control-Allow-Origin: "'*'"
+                    responseTemplates:
+                      application/json: "{}\n"
+                requestTemplates:
+                  application/json: "{\n  \"statusCode\" : 200\n}\n"
+                passthroughBehavior: "when_no_match"
+                type: "mock"
+          /licenses/{id}:
+            get:
+              parameters:
+                -
+                  in: path
+                  name: id
+                  description: "License ID"
+              responses:
+                "200":
+                  schema:
+                    $ref: "#/definitions/License"
+              x-amazon-apigateway-integration:
+                uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${Licenses}:live/invocations"
+                passthroughBehavior: "when_no_match"
+                httpMethod: "POST"
+                type: "aws_proxy"
+                responses:
+                  default:
+                    statusCode: "200"
+            put:
+              parameters:
+                -
+                  in: path
+                  name: id
+                  description: "License ID"
+                -
+                  in: body
+                  name: name
+                  schema:
+                    $ref: "#/definitions/License"
+              responses:
+                "200":
+                  schema:
+                    $ref: "#/definitions/License"
+              x-amazon-apigateway-integration:
+                uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${Licenses}:live/invocations"
+                passthroughBehavior: "when_no_match"
+                httpMethod: "POST"
+                type: "aws_proxy"
+                responses:
+                  default:
+                    statusCode: "200"
+            delete:
+              parameters:
+                -
+                  in: path
+                  name: id
+                  description: "License ID"
+              responses: {}
+              x-amazon-apigateway-integration:
+                uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${Licenses}:live/invocations"
+                passthroughBehavior: "when_no_match"
+                httpMethod: "POST"
+                type: "aws_proxy"
+                responses:
+                  default:
+                    statusCode: "200"
+            options:
+              consumes:
+                - "application/json"
+              produces:
+                - "application/json"
+              responses:
+                "200":
+                  description: "200 response"
+                  headers:
+                    Access-Control-Allow-Origin:
+                      type: "string"
+                    Access-Control-Allow-Methods:
+                      type: "string"
+                    Access-Control-Allow-Headers:
+                      type: "string"
+              x-amazon-apigateway-integration:
+                responses:
+                  default:
+                    statusCode: "200"
+                    responseParameters:
+                      method.response.header.Access-Control-Allow-Methods: "'*'"
+                      method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+                      method.response.header.Access-Control-Allow-Origin: "'*'"
+                    responseTemplates:
+                      application/json: "{}\n"
+                requestTemplates:
+                  application/json: "{\n  \"statusCode\" : 200\n}\n"
+                passthroughBehavior: "when_no_match"
+                type: "mock"
+          /tenants:
+            get:
+              parameters:
+                -
+                  in: query
+                  name: Offset
+                  description: "Start ID (exclusive)"
+                -
+                  in: query
+                  name: Limit
+                  description: "Maximum number of items in response"
+                -
+                  in: query
+                  name: Like
+                  description: "Filter for tenant name"
+                -
+                  in: query
+                  name: License
+                  description: "Filter for license ID"
+                -
+                  in: query
+                  name: ShortHash
+                  description: "Short hash of the tenant"
+                -
+                  in: query
+                  name: ExtID
+                  description: "External ID of the tenant"
+              responses:
+                "200":
+                  schema:
+                    $ref: "#/definitions/TenantList"
+              x-amazon-apigateway-integration:
+                uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${Tenants}:live/invocations"
+                passthroughBehavior: "when_no_match"
+                httpMethod: "POST"
+                type: "aws_proxy"
+                responses:
+                  default:
+                    statusCode: "200"
+            post:
+              parameters:
+                -
+                  in: body
+                  name: tenants
+                  schema:
+                    $ref: "#/definitions/TenantInsert"
+              responses:
+                "200":
+                  schema:
+                    $ref: "#/definitions/Tenant"
+              x-amazon-apigateway-integration:
+                uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${Tenants}:live/invocations"
+                passthroughBehavior: "when_no_match"
+                httpMethod: "POST"
+                type: "aws_proxy"
+                responses:
+                  default:
+                    statusCode: "200"
+            options:
+              consumes:
+                - "application/json"
+              produces:
+                - "application/json"
+              responses:
+                "200":
+                  description: "200 response"
+                  headers:
+                    Access-Control-Allow-Origin:
+                      type: "string"
+                    Access-Control-Allow-Methods:
+                      type: "string"
+                    Access-Control-Allow-Headers:
+                      type: "string"
+              x-amazon-apigateway-integration:
+                responses:
+                  default:
+                    statusCode: "200"
+                    responseParameters:
+                      method.response.header.Access-Control-Allow-Methods: "'*'"
+                      method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+                      method.response.header.Access-Control-Allow-Origin: "'*'"
+                    responseTemplates:
+                      application/json: "{}\n"
+                requestTemplates:
+                  application/json: "{\n  \"statusCode\" : 200\n}\n"
+                passthroughBehavior: "when_no_match"
+                type: "mock"
+          /tenants/{id}:
+            get:
+              parameters:
+                -
+                  in: path
+                  name: id
+                  description: "Tenant ID"
+              responses:
+                "200":
+                  schema:
+                    $ref: "#/definitions/Tenant"
+              x-amazon-apigateway-integration:
+                uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${Tenants}:live/invocations"
+                passthroughBehavior: "when_no_match"
+                httpMethod: "POST"
+                type: "aws_proxy"
+                responses:
+                  default:
+                    statusCode: "200"
+            put:
+              parameters:
+                -
+                  in: path
+                  name: id
+                  description: "Tenant ID"
+                -
+                  in: body
+                  name: tenant
+                  schema:
+                    $ref: "#/definitions/Tenant"
+              responses:
+                "200":
+                  schema:
+                    $ref: "#/definitions/Tenant"
+              x-amazon-apigateway-integration:
+                uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${Tenants}:live/invocations"
+                passthroughBehavior: "when_no_match"
+                httpMethod: "POST"
+                type: "aws_proxy"
+                responses:
+                  default:
+                    statusCode: "200"
+            delete:
+              parameters:
+                -
+                  in: path
+                  name: id
+                  description: "Tenant ID"
+              responses: {}
+              x-amazon-apigateway-integration:
+                uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${Tenants}:live/invocations"
+                passthroughBehavior: "when_no_match"
+                httpMethod: "POST"
+                type: "aws_proxy"
+                responses:
+                  default:
+                    statusCode: "200"
+            options:
+              consumes:
+                - "application/json"
+              produces:
+                - "application/json"
+              responses:
+                "200":
+                  description: "200 response"
+                  headers:
+                    Access-Control-Allow-Origin:
+                      type: "string"
+                    Access-Control-Allow-Methods:
+                      type: "string"
+                    Access-Control-Allow-Headers:
+                      type: "string"
+              x-amazon-apigateway-integration:
+                responses:
+                  default:
+                    statusCode: "200"
+                    responseParameters:
+                      method.response.header.Access-Control-Allow-Methods: "'*'"
+                      method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+                      method.response.header.Access-Control-Allow-Origin: "'*'"
+                    responseTemplates:
+                      application/json: "{}\n"
+                requestTemplates:
+                  application/json: "{\n  \"statusCode\" : 200\n}\n"
+                passthroughBehavior: "when_no_match"
+                type: "mock"
+          /count/licenses:
+            get:
+              parameters:
+                -
+                  in: query
+                  name: Like
+                  description: "Filter for license name"
+              responses: {}
+              x-amazon-apigateway-integration:
+                uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${Count}:live/invocations"
+                passthroughBehavior: "when_no_match"
+                httpMethod: "POST"
+                type: "aws_proxy"
+                responses:
+                  default:
+                    statusCode: "200"
+            options:
+              consumes:
+                - "application/json"
+              produces:
+                - "application/json"
+              responses:
+                "200":
+                  description: "200 response"
+                  headers:
+                    Access-Control-Allow-Origin:
+                      type: "string"
+                    Access-Control-Allow-Methods:
+                      type: "string"
+                    Access-Control-Allow-Headers:
+                      type: "string"
+              x-amazon-apigateway-integration:
+                responses:
+                  default:
+                    statusCode: "200"
+                    responseParameters:
+                      method.response.header.Access-Control-Allow-Methods: "'*'"
+                      method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+                      method.response.header.Access-Control-Allow-Origin: "'*'"
+                    responseTemplates:
+                      application/json: "{}\n"
+                requestTemplates:
+                  application/json: "{\n  \"statusCode\" : 200\n}\n"
+                passthroughBehavior: "when_no_match"
+                type: "mock"
+          /count/tenants:
+            get:
+              parameters:
+                -
+                  in: query
+                  name: Like
+                  description: "Filter for tenant name"
+                -
+                  in: query
+                  name: License
+                  description: "Filter for license ID"
+                -
+                  in: query
+                  name: ShortHash
+                  description: "Short hash of the tenant"
+                -
+                  in: query
+                  name: ExtID
+                  description: "External ID of the tenant"
+              responses: {}
+              x-amazon-apigateway-integration:
+                uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${Count}:live/invocations"
+                passthroughBehavior: "when_no_match"
+                httpMethod: "POST"
+                type: "aws_proxy"
+                responses:
+                  default:
+                    statusCode: "200"
+            options:
+              consumes:
+                - "application/json"
+              produces:
+                - "application/json"
+              responses:
+                "200":
+                  description: "200 response"
+                  headers:
+                    Access-Control-Allow-Origin:
+                      type: "string"
+                    Access-Control-Allow-Methods:
+                      type: "string"
+                    Access-Control-Allow-Headers:
+                      type: "string"
+              x-amazon-apigateway-integration:
+                responses:
+                  default:
+                    statusCode: "200"
+                    responseParameters:
+                      method.response.header.Access-Control-Allow-Methods: "'*'"
+                      method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+                      method.response.header.Access-Control-Allow-Origin: "'*'"
+                    responseTemplates:
+                      application/json: "{}\n"
+                requestTemplates:
+                  application/json: "{\n  \"statusCode\" : 200\n}\n"
+                passthroughBehavior: "when_no_match"
+                type: "mock"
