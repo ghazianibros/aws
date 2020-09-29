@@ -1,0 +1,321 @@
+AWSTemplateFormatVersion: 2010-09-09
+Transform:
+  - AWS::Serverless-2016-10-31
+
+Parameters:
+  AlibabaSDKCredentialsParameterName:
+    Type: String
+  StepFuncionInvokeRoleArns:
+    Type: CommaDelimitedList
+
+Resources:
+
+  DomainAddImageFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: index.handler
+      Runtime: python3.8
+      CodeUri: lambdas/domain-add-image
+      Timeout: 60
+      Environment:
+        Variables:
+          SDK_CREDENTIALS_PARAMETER: !Ref AlibabaSDKCredentialsParameterName
+      Policies:
+        - SSMParameterReadPolicy:
+            ParameterName: !Ref AlibabaSDKCredentialsParameterName
+
+
+  DomainAddTenantFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: index.handler
+      Runtime: python3.8
+      CodeUri: lambdas/domain-add-tenant
+      Timeout: 60
+      Environment:
+        Variables:
+          CHINA_PROXY_SERVER_IP: '121.196.195.196'
+          CHINA_PROXY_EU_SERVER_IP: '120.55.57.245'
+          SDK_CREDENTIALS_PARAMETER: !Ref AlibabaSDKCredentialsParameterName
+      Policies:
+        - SSMParameterReadPolicy:
+            ParameterName: !Ref AlibabaSDKCredentialsParameterName
+
+
+  DomainRemoveFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: index.handler
+      Runtime: python3.8
+      CodeUri: lambdas/domain-remove
+      Timeout: 60
+      Environment:
+        Variables:
+          SDK_CREDENTIALS_PARAMETER: !Ref AlibabaSDKCredentialsParameterName
+      Policies:
+        - SSMParameterReadPolicy:
+            ParameterName: !Ref AlibabaSDKCredentialsParameterName
+
+
+  ProxyAddTenantFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: index.handler
+      Runtime: python3.8
+      CodeUri: lambdas/proxy-add-tenant
+      Timeout: 60
+      Environment:
+        Variables:
+          US_PROXY_SERVER_IP: '47.252.0.196'
+          EU_PROXY_SERVER_IP: '47.254.171.59'
+
+
+  ProxyRemoveTenantFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: index.handler
+      Runtime: python3.8
+      CodeUri: lambdas/proxy-remove-tenant
+      Timeout: 60
+      Environment:
+        Variables:
+          US_PROXY_SERVER_IP: '47.252.0.196'
+          EU_PROXY_SERVER_IP: '47.254.171.59'
+
+
+  StepFunctionErrorTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: China-Tunnel-StateMachine-Errors
+
+
+  AddTenantStepFunction:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: 'ChinaTunnel-Add-Tenant'
+      RoleArn:
+        Fn::GetAtt:
+          - StepFunctionRole
+          - Arn
+      DefinitionString: !Sub |-
+        {
+            "StartAt": "ProxyAddTenant",
+            "States": {
+                "ProxyAddTenant": {
+                    "Type": "Task",
+                    "Resource": "${ProxyAddTenantFunction.Arn}",
+                    "ResultPath": null,
+                    "Next": "DomainAddTenant",
+                    "Catch": [ {
+                      "ErrorEquals": [ "States.ALL" ],
+                      "Next": "NotifyFailure"
+                    }]
+                },
+                "DomainAddTenant": {
+                    "Type": "Task",
+                    "Resource": "${DomainAddTenantFunction.Arn}",
+                    "ResultPath": null,
+                    "End": true,
+                    "Catch": [ {
+                      "ErrorEquals": [ "States.ALL" ],
+                      "Next": "NotifyFailure"
+                    }]
+                },
+                "NotifyFailure": {
+                  "Type": "Task",
+                  "Resource": "arn:aws:states:::sns:publish",
+                  "Parameters": {
+                    "TopicArn": "${StepFunctionErrorTopic}",
+                    "Message.$": "$$.Execution.Id",
+                    "Subject": "Adding tenant to China tunnel has failed"
+                  },
+                  "ResultPath": null,
+                  "Next": "Failure"
+                },
+                "Failure": {
+                  "Type": "Fail"
+                }
+            }
+        }
+
+
+  AddImageStepFunction:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: 'ChinaTunnel-Add-Image-Server'
+      RoleArn:
+        Fn::GetAtt:
+          - StepFunctionRole
+          - Arn
+      DefinitionString: !Sub |-
+        {
+            "StartAt": "DomainAddImage",
+            "States": {
+                "DomainAddImage": {
+                    "Type": "Task",
+                    "Resource": "${DomainAddImageFunction.Arn}",
+                    "ResultPath": null,
+                    "End": true,
+                    "Catch": [ {
+                      "ErrorEquals": [ "States.ALL" ],
+                      "Next": "NotifyFailure"
+                    }]
+                },
+                "NotifyFailure": {
+                  "Type": "Task",
+                  "Resource": "arn:aws:states:::sns:publish",
+                  "Parameters": {
+                    "TopicArn": "${StepFunctionErrorTopic}",
+                    "Message.$": "$$.Execution.Id",
+                    "Subject": "Adding image server to China tunnel has failed"
+                  },
+                  "ResultPath": null,
+                  "Next": "Failure"
+                },
+                "Failure": {
+                  "Type": "Fail"
+                }
+            }
+        }
+
+
+  RemoveTenantStepFunction:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: 'ChinaTunnel-Remove-Tenant'
+      RoleArn:
+        Fn::GetAtt:
+          - StepFunctionRole
+          - Arn
+      DefinitionString: !Sub |-
+        {
+            "StartAt": "DomainRemoveTenant",
+            "States": {
+                "DomainRemoveTenant": {
+                    "Type": "Task",
+                    "Resource": "${DomainRemoveFunction.Arn}",
+                    "ResultPath": null,
+                    "End": true,
+                    "Catch": [ {
+                      "ErrorEquals": [ "States.ALL" ],
+                      "Next": "NotifyFailure"
+                    }]
+                },
+                "NotifyFailure": {
+                  "Type": "Task",
+                  "Resource": "arn:aws:states:::sns:publish",
+                  "Parameters": {
+                    "TopicArn": "${StepFunctionErrorTopic}",
+                    "Message.$": "$$.Execution.Id",
+                    "Subject": "Removing tenant from China tunnel has failed"
+                  },
+                  "ResultPath": null,
+                  "Next": "Failure"
+                },
+                "Failure": {
+                  "Type": "Fail"
+                }
+            }
+        }
+
+
+  RemoveImageStepFunction:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: 'ChinaTunnel-Remove-Image-Server'
+      RoleArn:
+        Fn::GetAtt:
+          - StepFunctionRole
+          - Arn
+      DefinitionString: !Sub |-
+        {
+            "StartAt": "DomainRemoveImage",
+            "States": {
+                "DomainRemoveImage": {
+                    "Type": "Task",
+                    "Resource": "${DomainRemoveFunction.Arn}",
+                    "ResultPath": null,
+                    "End": true,
+                    "Catch": [ {
+                      "ErrorEquals": [ "States.ALL" ],
+                      "Next": "NotifyFailure"
+                    }]
+                },
+                "NotifyFailure": {
+                  "Type": "Task",
+                  "Resource": "arn:aws:states:::sns:publish",
+                  "Parameters": {
+                    "TopicArn": "${StepFunctionErrorTopic}",
+                    "Message.$": "$$.Execution.Id",
+                    "Subject": "Removing image from China tunnel has failed"
+                  },
+                  "ResultPath": null,
+                  "Next": "Failure"
+                },
+                "Failure": {
+                  "Type": "Fail"
+                }
+            }
+        }
+
+
+  StepFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: [ !Sub 'states.${AWS::Region}.amazonaws.com' ]
+            Action: sts:AssumeRole
+      Path: /
+      Policies:
+        -
+          PolicyName: "root"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              -
+                Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource:
+                  - !GetAtt DomainAddImageFunction.Arn
+                  - !GetAtt DomainAddTenantFunction.Arn
+                  - !GetAtt DomainRemoveFunction.Arn
+                  - !GetAtt ProxyAddTenantFunction.Arn
+                  - !GetAtt ProxyRemoveTenantFunction.Arn
+              -
+                Effect: Allow
+                Action:
+                  - sns:Publish
+                Resource:
+                  - !Ref StepFunctionErrorTopic
+
+
+  StepInvokeFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: China-Tunnel-StepFunction-Invoke
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Ref StepFuncionInvokeRoleArns
+            Action: sts:AssumeRole
+      Path: /
+      Policies:
+        -
+          PolicyName: "root"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              -
+                Effect: Allow
+                Action:
+                  - states:StartExecution
+                Resource:
+                  - !Ref AddTenantStepFunction
+                  - !Ref AddImageStepFunction
+                  - !Ref RemoveTenantStepFunction
+                  - !Ref RemoveImageStepFunction

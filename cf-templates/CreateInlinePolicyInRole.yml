@@ -1,0 +1,52 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform:
+  - AWS::Serverless-2016-10-31
+  - AWS::CodeStar
+
+Parameters:
+  ProjectId:
+    Type: String
+  CodeDeployRole:
+    Type: String
+
+Globals:
+  Function:
+    AutoPublishAlias: live
+    DeploymentPreference:
+      Enabled: true
+      Type: Canary10Percent5Minutes
+      Role: !Ref CodeDeployRole
+
+Resources:
+  CustomerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: "MyTestRole"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: Allow
+            Principal:
+              Service: [lambda.amazonaws.com]
+            Action: sts:AssumeRole
+  CustomerPolicy:
+    DependsOn:
+      -  CustomerRole
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: "MyTestPolicy"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: Allow
+            Action:
+              - "ec2:AuthorizeSecurityGroupEgress"
+              - "ec2:AuthorizeSecurityGroupIngress"
+              - "ec2:CreateSecurityGroup"
+              - "ec2:DeleteSecurityGroup"
+            Resource: "*"
+      Roles:
+        -
+          Ref: CustomerRole

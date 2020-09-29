@@ -1,0 +1,119 @@
+AWSTemplateFormatVersion: 2010-09-09
+Transform:
+  - AWS::Serverless-2016-10-31
+  - AWS::CodeStar
+
+Parameters:
+  ProjectId:
+    Type: String
+  CodeDeployRole:
+    Type: String
+
+Globals:
+  Function:
+    AutoPublishAlias: live
+    DeploymentPreference:
+      Enabled: true
+      Type: Canary10Percent5Minutes
+      Role: !Ref CodeDeployRole
+
+Resources:
+  GerberITScanAuthorizeIngress:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: 'GerberIT-Scan-Authorize-Ingress'
+      Handler: lambda_function.lambda_handler
+      Runtime: python3.8
+      Timeout: 30
+      MemorySize: 256
+      CodeUri: ./lambdas/authorize
+      Environment:
+        Variables:
+          SCANNER_IP: '50.112.117.210/32'
+          SECURITY_GROUP_ID: 'sg-0c5263f71fb50d7ee'
+    Role:
+      Fn::GetAtt:
+        - GerberITScanLambdaExecutionRole
+
+  GerberITScanRevokeIngress:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: 'GerberIT-Scan-Revoke-Ingress'
+      Handler: lambda_function.lambda_handler
+      Runtime: python3.8
+      Timeout: 30
+      MemorySize: 256
+      CodeUri: ./lambdas/revoke
+      Environment:
+        Variables:
+          SCANNER_IP: '50.112.117.210/32'
+          SECURITY_GROUP_ID: 'sg-0c5263f71fb50d7ee'
+    Role:
+      Fn::GetAtt:
+        - GerberITScanLambdaExecutionRole
+
+  GerberITScanCheckIngress:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: 'GerberIT-Scan-Check-Ingress'
+      Handler: lambda_function.lambda_handler
+      Runtime: python3.8
+      Timeout: 30
+      MemorySize: 256
+      CodeUri: ./lambdas/check
+      Environment:
+        Variables:
+          CHANNEL_NM: 'test'
+          SECURITY_GROUP_ID: 'sg-0c5263f71fb50d7ee'
+          TOPIC_ARN: ''
+      Role:
+        Fn::GetAtt:
+          - GerberITScanLambdaExecutionRole
+
+  SendMsgToSlack:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: 'Send-Msg-To-Slack'
+      Handler: lambda_function.lambda_handler
+      Runtime: python3.8
+      Timeout: 30
+      MemorySize: 256
+      CodeUri: ./lambdas/slack
+      Environment:
+        Variables:
+          SLACK_HOOK_URL: 'https://hooks.slack.com/services/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'
+      Role:
+        Fn::GetAtt:
+          - LambdaExecutionRole
+          - Arn
+
+
+  GerberITScanLambdaExecutionRole:
+    Description: Creating service role in IAM for AWS Lambda
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: 'GerberIT-Scan-Lambda-Role'
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: [lambda.amazonaws.com]
+            Action: sts:AssumeRole
+      Path: /
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+      Policies:
+        -
+          PolicyName: "root"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              -
+                Effect: Allow
+                Action:
+                  - "ec2:AuthorizeSecurityGroupEgress"
+                  - "ec2:AuthorizeSecurityGroupIngress"
+                  - "ec2:CreateSecurityGroup"
+                  - "ec2:DeleteSecurityGroup"
+                Resource:
+                  - !GetAtt SendMsgToSlack.Arn
